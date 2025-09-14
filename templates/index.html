@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>OCR Extractor</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #121212;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            width: 100%;
+        }
+
+        #canvasContainer {
+            display: none;
+            margin-top: 20px;
+        }
+
+        canvas {
+            border: 2px solid #555;
+            max-width: 100%;
+            height: auto;
+        }
+
+        #resultBox {
+            width: 100%;
+            height: 200px;
+            background-color: #1e1e1e;
+            color: white;
+        }
+
+        .drop-zone {
+            border: 2px dashed #aaa;
+            padding: 30px;
+            text-align: center;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container text-center">
+        <h2>Image Text Extractor</h2>
+
+        <div class="d-flex gap-2 mb-3">
+            <label for="fileInput" class="btn btn-primary w-100">Choose File</label>
+            <input type="file" id="fileInput" class="d-none" />
+            <button id="pasteBtn" class="btn btn-outline-light w-100">Paste Image</button>
+        </div>
+
+        <div id="dropZone" class="drop-zone">Drag & Drop Image Here</div>
+        <div id="canvasContainer">
+            <canvas id="imgCanvas"></canvas>
+        </div>
+
+        <textarea id="resultBox" class="form-control mt-3" readonly></textarea>
+        <button class="btn btn-success mt-2 col-md-12" onclick="copyText()">Copy Text</button>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById("fileInput");
+        const pasteBtn = document.getElementById("pasteBtn");
+        const canvas = document.getElementById("imgCanvas");
+        const ctx = canvas.getContext("2d");
+        const resultBox = document.getElementById("resultBox");
+        const dropZone = document.getElementById("dropZone");
+        const canvasContainer = document.getElementById("canvasContainer");
+
+        let imageData = null;
+        let regions = [];
+        let isDragging = false, startX = 0, startY = 0;
+
+        function loadImage(img) {
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            canvasContainer.style.display = "block";
+        }
+
+        function handleFile(file) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                imageData = reader.result;
+                const img = new Image();
+                img.onload = () => {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    loadImage(img);
+                    extractText(); // full image OCR
+                };
+                img.src = reader.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        fileInput.addEventListener("change", () => {
+            if (fileInput.files.length > 0) handleFile(fileInput.files[0]);
+        });
+
+        pasteBtn.addEventListener("click", async () => {
+            const items = await navigator.clipboard.read();
+            for (const item of items) {
+                if (item.types.includes("image/png")) {
+                    const blob = await item.getType("image/png");
+                    handleFile(blob);
+                    return;
+                }
+            }
+            alert("No image found in clipboard.");
+        });
+
+        dropZone.addEventListener("dragover", e => {
+            e.preventDefault();
+            dropZone.classList.add("dragover");
+        });
+        dropZone.addEventListener("dragleave", () => {
+            dropZone.classList.remove("dragover");
+        });
+        dropZone.addEventListener("drop", e => {
+            e.preventDefault();
+            dropZone.classList.remove("dragover");
+            if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
+        });
+
+        canvas.addEventListener("mousedown", e => {
+            const rect = canvas.getBoundingClientRect();
+            startX = (e.clientX - rect.left) * (canvas.width / rect.width);
+            startY = (e.clientY - rect.top) * (canvas.height / rect.height);
+            isDragging = true;
+        });
+
+        canvas.addEventListener("mousemove", e => {
+            if (!isDragging) return;
+            redrawCanvas();
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+            const mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
+            ctx.strokeStyle = "lime";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(startX, startY, mouseX - startX, mouseY - startY);
+        });
+
+        canvas.addEventListener("mouseup", e => {
+            isDragging = false;
+            const rect = canvas.getBoundingClientRect();
+            const endX = (e.clientX - rect.left) * (canvas.width / rect.width);
+            const endY = (e.clientY - rect.top) * (canvas.height / rect.height);
+            const region = {
+                x: Math.min(startX, endX),
+                y: Math.min(startY, endY),
+                width: Math.abs(endX - startX),
+                height: Math.abs(endY - startY),
+            };
+            regions.push(region);
+            redrawCanvas();
+            extractText();
+        });
+
+        function redrawCanvas() {
+            const img = new Image();
+            img.onload = () => {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                ctx.strokeStyle = "lime";
+                ctx.lineWidth = 2;
+                regions.forEach(r => ctx.strokeRect(r.x, r.y, r.width, r.height));
+            };
+            img.src = imageData;
+        }
+
+        async function extractText() {
+            if (!imageData) return;
+            const payload = {
+                image: imageData,
+                selections: regions,
+            };
+            const res = await fetch("/upload", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            resultBox.value = data.text || "[No text found]";
+        }
+
+        function copyText() {
+            navigator.clipboard.writeText(resultBox.value);
+        }
+    </script>
+</body>
+</html>
