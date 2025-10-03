@@ -194,6 +194,20 @@
         function copyText() {
             navigator.clipboard.writeText(resultBox.value);
         }
+
+
+        // automatically paste image on Ctrl+V
+        window.addEventListener("paste", async (e) => {
+            const items = e.clipboardData.items;
+            for (const item of items) {
+                if (item.type.startsWith("image/")) {
+                    const blob = item.getAsFile();
+                    handleFile(blob);
+                    return;
+                }
+            }
+            alert("No image found in clipboard.");
+        });
     </script>
 </body>
 </html>
