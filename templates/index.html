@@ -226,17 +226,24 @@
 
         // once tab is focused, automatically paste image from clipboard
         window.addEventListener("focus", async () => {
-            const items = await navigator.clipboard.read();
-            for (const item of items) {
-                if (item.types.includes("image/png")) {
-                    const blob = await item.getType("image/png");
-                    handleFile(blob);
-                    return;
+            try {
+                const items = await navigator.clipboard.read();
+                for (const item of items) {
+                    for (const type of item.types) {
+                        if (type.startsWith("image/")) {
+                            const blob = await item.getType(type);
+                            handleFile(blob);
+                            return;
+                        }
+                    }
                 }
+            } catch (error) {
+                console.error("Clipboard read failed:", error);
             }
         });
 
 
     </script>
 </body>
+
 </html>
