@@ -215,6 +215,17 @@
                 copyText();
             }
         });
+
+        // use Ctrl+O to open file dialog
+        window.addEventListener("keydown", (e) => {
+            if (e.ctrlKey && e.key === 'o') {
+                e.preventDefault();
+                fileInput.click();
+            }
+        });
+
+        
+
     </script>
 </body>
 </html>
