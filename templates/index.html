@@ -208,6 +208,13 @@
             }
             alert("No image found in clipboard.");
         });
+
+        // automatically copy text on Ctrl+C
+        window.addEventListener("keydown", (e) => {
+            if (e.ctrlKey && e.key === 'c') {
+                copyText();
+            }
+        });
     </script>
 </body>
 </html>
