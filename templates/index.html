@@ -90,6 +90,7 @@
             const reader = new FileReader();
             reader.onloadend = () => {
                 imageData = reader.result;
+                regions = [];
                 const img = new Image();
                 img.onload = () => {
                     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -153,11 +154,19 @@
             const rect = canvas.getBoundingClientRect();
             const endX = (e.clientX - rect.left) * (canvas.width / rect.width);
             const endY = (e.clientY - rect.top) * (canvas.height / rect.height);
+            const width = Math.abs(endX - startX);
+            const height = Math.abs(endY - startY);
+
+            // Ignore click-only or tiny drags that create empty OCR crops.
+            if (width < 2 || height < 2) {
+                return;
+            }
+
             const region = {
                 x: Math.min(startX, endX),
                 y: Math.min(startY, endY),
-                width: Math.abs(endX - startX),
-                height: Math.abs(endY - startY),
+                width,
+                height,
             };
             regions.push(region);
             redrawCanvas();
