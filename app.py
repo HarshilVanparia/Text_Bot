@@ -1,73 +1,123 @@
 import base64
 import io
 from flask import Flask, request, jsonify, render_template
-from PIL import Image, ImageFilter, ImageOps
-import pytesseract
+from PIL import Image
 import cv2
 import numpy as np
+from rapidocr_onnxruntime import RapidOCR
 
 app = Flask(__name__)
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Ghost\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+ocr_engine = RapidOCR()
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
 def preprocess_image(pil_image):
-    # Convert PIL image to OpenCV format
-    cv_image = np.array(pil_image.convert("RGB"))
-    cv_image = cv2.cvtColor(cv_image, cv2.COLOR_RGB2GRAY)
+    if pil_image is None or pil_image.width == 0 or pil_image.height == 0:
+        raise ValueError("Empty image region")
 
-    # Increase size for small text
-    scale_factor = 2
-    cv_image = cv2.resize(cv_image, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
+    image = pil_image.convert("RGB")
+    cv_image = np.array(image)
+    if cv_image.size == 0:
+        raise ValueError("Empty image array")
 
-    # Apply adaptive thresholding (better than fixed threshold for varied backgrounds)
-    cv_image = cv2.adaptiveThreshold(cv_image, 255,
-                                     cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                     cv2.THRESH_BINARY, 35, 15)
+    return cv2.cvtColor(cv_image, cv2.COLOR_RGB2BGR)
 
-    # Remove small noise
-    kernel = np.ones((1, 1), np.uint8)
-    cv_image = cv2.morphologyEx(cv_image, cv2.MORPH_OPEN, kernel)
-    cv_image = cv2.medianBlur(cv_image, 3)
 
-    # Sharpen image
-    sharpen_kernel = np.array([[-1, -1, -1],
-                               [-1, 9, -1],
-                               [-1, -1, -1]])
-    cv_image = cv2.filter2D(cv_image, -1, sharpen_kernel)
+def enhance_image_for_ocr(pil_image):
+    """Create a light fallback version for clear text that the first pass misses."""
+    image = pil_image.convert("RGB")
+    cv_image = np.array(image)
+    if cv_image.size == 0:
+        raise ValueError("Empty image array")
 
-    # Convert back to PIL for Tesseract
-    processed_pil = Image.fromarray(cv_image)
-    return processed_pil
+    bgr = cv2.cvtColor(cv_image, cv2.COLOR_RGB2BGR)
+
+    # Upscale only if the source is reasonably small.
+    height, width = bgr.shape[:2]
+    if max(height, width) < 1400:
+        bgr = cv2.resize(bgr, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+
+def extract_text_from_image(pil_image, lang_code):
+    # RapidOCR is language-agnostic for this use case, so keep the main path fast.
+    processed = preprocess_image(pil_image)
+    results, _ = ocr_engine(processed)
+
+    lines = []
+    if results:
+        for item in results:
+            if len(item) >= 2 and item[1]:
+                text = str(item[1]).strip()
+                if text:
+                    lines.append(text)
+
+    if lines:
+        return "\n".join(lines)
+
+    fallback = enhance_image_for_ocr(pil_image)
+    results, _ = ocr_engine(fallback)
+    lines = []
+    if results:
+        for item in results:
+            if len(item) >= 2 and item[1]:
+                text = str(item[1]).strip()
+                if text:
+                    lines.append(text)
+
+    return "\n".join(lines)
 
 @app.route('/upload', methods=['POST'])
 def upload():
     data = request.get_json()
 
-    if 'image' not in data:
+    if not data or 'image' not in data:
         return jsonify({"error": "No image provided"}), 400
 
-    image_data = data['image'].split(',')[1]
+    image_field = data['image']
+    image_data = image_field.split(',', 1)[1] if ',' in image_field else image_field
     selections = data.get("selections", [])
     lang = data.get("lang", "eng")
 
     try:
         img_bytes = base64.b64decode(image_data)
-        image = Image.open(io.BytesIO(img_bytes))
+        image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        img_w, img_h = image.size
 
         extracted_text = ""
         if selections:
+            chunks = []
             for sel in selections:
-                x, y, w, h = map(int, (sel["x"], sel["y"], sel["width"], sel["height"]))
-                cropped = image.crop((x, y, x + w, y + h))
-                processed = preprocess_image(cropped)
-                extracted_text += pytesseract.image_to_string(processed, lang=lang, config="--oem 3 --psm 6") + "\n"
+                x, y, w, h = map(float, (sel["x"], sel["y"], sel["width"], sel["height"]))
+
+                # Skip accidental clicks/tiny boxes that don't represent text regions.
+                if w < 2 or h < 2:
+                    continue
+
+                x1 = max(0, min(int(round(x)), img_w))
+                y1 = max(0, min(int(round(y)), img_h))
+                x2 = max(0, min(int(round(x + w)), img_w))
+                y2 = max(0, min(int(round(y + h)), img_h))
+
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                cropped = image.crop((x1, y1, x2, y2))
+                chunk_text = extract_text_from_image(cropped, lang)
+                if chunk_text:
+                    chunks.append(chunk_text)
+            extracted_text = "\n".join(chunks)
         else:
-            processed = preprocess_image(image)
-            extracted_text = pytesseract.image_to_string(processed, lang=lang, config="--oem 3 --psm 6")
+            extracted_text = extract_text_from_image(image, lang)
 
         return jsonify({"text": extracted_text.strip()})
 
